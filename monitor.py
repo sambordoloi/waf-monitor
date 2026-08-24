@@ -28,7 +28,11 @@ class WafMonitor:
         self.elk = ElkClient(config) if config.elk_url else None
 
     def detect_and_allow(self, registry: dict[str, str]) -> None:
-        blocked = self.logs.blocked_valid_counts(registry, self.config.block_window_minutes)
+        blocked = self.logs.blocked_valid_counts(
+            registry,
+            self.config.block_window_minutes,
+            registry_only=self.config.registry_only,
+        )
         for ip, info in blocked.items():
             if info["count"] < self.config.block_threshold:
                 continue
@@ -98,7 +102,11 @@ class WafMonitor:
         registry = self.waf.load_registry()
         logger.info("Registry loaded: %s client IP(s)", len(registry))
 
-        blocked = self.logs.blocked_valid_counts(registry, self.config.block_window_minutes)
+        blocked = self.logs.blocked_valid_counts(
+            registry,
+            self.config.block_window_minutes,
+            registry_only=self.config.registry_only,
+        )
         if blocked:
             for ip, info in blocked.items():
                 logger.info(
@@ -111,10 +119,12 @@ class WafMonitor:
                     self.config.block_threshold,
                 )
         else:
+            scope = "registry IPs only on /api/token/" if self.config.registry_only else "all blocked IPs"
             logger.info(
                 "No qualifying BLOCK events in last %s min "
-                "(need BLOCK on /api/token/ with registry IP, or /dem_* URI)",
+                "(scope: %s on /api/token/ or /dem_* URI)",
                 self.config.block_window_minutes,
+                scope,
             )
 
         active = self.state.list_active_sessions()
@@ -130,11 +140,12 @@ class WafMonitor:
 
     def run_forever(self) -> None:
         logger.info(
-            "WAF monitor started (interval=%ss, block_threshold=%s, hits_to_remove=%s, window=%sm)",
+            "WAF monitor started (interval=%ss, block_threshold=%s, hits_to_remove=%s, window=%sm, registry_only=%s)",
             self.config.monitor_interval,
             self.config.block_threshold,
             self.config.hits_to_remove,
             self.config.block_window_minutes,
+            self.config.registry_only,
         )
         logger.info(
             "WAF logs: s3://%s/%s",

@@ -7,8 +7,8 @@ Continuously monitors WAF S3 logs for **blocked valid client APIs**, temporarily
 ```text
 Every 60s loop:
   1. Scan WAF S3 logs (last 30m)
-  2. BLOCK on /api/token/ (registry IP) or /dem_* ?
-  3. If blocked >= 10 times → add IP to debug-temp-allow
+  2. BLOCK on /api/token/ or /dem_* (all IPs by default)
+  3. If blocked >= threshold → add IP to debug-temp-allow
   4. If debug IP has >= 1 WAF ALLOW → remove IP immediately, then query ELK + Slack
   5. If no WAF ALLOW in 5 min → remove IP (fail-safe)
 ```
@@ -82,5 +82,6 @@ docker compose logs -f waf-monitor
 ## Notes
 
 - Passwords from ELK `request_body` are **never** sent to Slack.
-- Only `/api/token/` (registry IPs) and `/dem_*` URIs are monitored.
+- Monitors **all blocked IPs** on `/api/token/` and `/dem_*` URIs (set `REGISTRY_ONLY=true` for legacy registry-only token filtering).
+- Registry file is optional — used for client names in Slack when known.
 - State is persisted in Docker volume `/data/state.json`.

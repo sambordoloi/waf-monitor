@@ -3,6 +3,7 @@ import json
 import logging
 
 import boto3
+from botocore.exceptions import ClientError
 
 from config import Config
 
@@ -16,12 +17,21 @@ class WafClient:
         self.s3 = boto3.client("s3", region_name=config.aws_region)
 
     def load_registry(self) -> dict[str, str]:
-        obj = self.s3.get_object(
-            Bucket=self.config.waf_log_bucket,
-            Key=self.config.registry_s3_key,
-        )
+        try:
+            obj = self.s3.get_object(
+                Bucket=self.config.waf_log_bucket,
+                Key=self.config.registry_s3_key,
+            )
+        except ClientError as exc:
+            if exc.response.get("Error", {}).get("Code") == "NoSuchKey":
+                logger.warning(
+                    "Registry file not found: s3://%s/%s",
+                    self.config.waf_log_bucket,
+                    self.config.registry_s3_key,
+                )
+                return {}
+            raise
         raw = json.loads(obj["Body"].read())
-        # normalize keys to plain IP for lookup
         registry: dict[str, str] = {}
         for cidr, client in raw.items():
             ip = cidr.split("/")[0]

@@ -94,6 +94,7 @@ class WafLogReader:
         self,
         registry: dict[str, str],
         window_minutes: int,
+        registry_only: bool = False,
     ) -> dict[str, dict[str, Any]]:
         end = datetime.now(timezone.utc)
         start = end - timedelta(minutes=window_minutes)
@@ -111,7 +112,7 @@ class WafLogReader:
             ip = req.get("clientIp") or req.get("clientip")
             if not ip:
                 continue
-            if uri == "/api/token/" and ip not in registry:
+            if registry_only and uri == "/api/token/" and ip not in registry:
                 continue
             per_ip[ip] += 1
             sample_uri[ip] = uri

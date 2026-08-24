@@ -22,6 +22,8 @@ class Config:
         "AWSLogs/231322554539/WAFLogs/ap-south-1/WAF-CV3/",
     )
     registry_s3_key = os.getenv("REGISTRY_S3_KEY", "config/waf-ip-clients.json")
+    # If true, only /api/token/ blocks from registry IPs are monitored (legacy).
+    registry_only = env_bool("REGISTRY_ONLY", False)
 
     debug_ip_set_name = os.getenv("DEBUG_IP_SET_NAME", "debug-temp-allow")
     debug_ip_set_id = os.getenv("DEBUG_IP_SET_ID", "")
