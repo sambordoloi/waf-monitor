@@ -1,0 +1,20 @@
+services:
+  waf-monitor:
+    build: .
+    container_name: waf-monitor
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - waf-monitor-data:/data
+    # AWS credentials: use one of the options below
+    # environment:
+    #   AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+    #   AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+    # Or mount ~/.aws for EC2 profile-based auth:
+    # volumes:
+    #   - waf-monitor-data:/data
+    #   - ~/.aws:/home/appuser/.aws:ro
+
+volumes:
+  waf-monitor-data:
