@@ -63,7 +63,18 @@ class WafLogReader:
         return sorted(set(keys))
 
     def _iter_records(self, start: datetime, end: datetime):
-        for key in self._list_keys(start, end):
+        keys = self._list_keys(start, end)
+        if not keys:
+            logger.warning(
+                "No WAF log files in s3://%s/%s (%s → %s)",
+                self.config.waf_log_bucket,
+                self.config.waf_log_prefix,
+                start.isoformat(),
+                end.isoformat(),
+            )
+            return
+        logger.debug("Reading %s WAF log file(s)", len(keys))
+        for key in keys:
             body = self.s3.get_object(Bucket=self.config.waf_log_bucket, Key=key)["Body"].read()
             if key.endswith(".gz"):
                 lines = gzip.GzipFile(fileobj=BytesIO(body))

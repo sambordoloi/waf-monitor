@@ -96,16 +96,50 @@ class WafMonitor:
 
     def run_once(self) -> None:
         registry = self.waf.load_registry()
+        logger.info("Registry loaded: %s client IP(s)", len(registry))
+
+        blocked = self.logs.blocked_valid_counts(registry, self.config.block_window_minutes)
+        if blocked:
+            for ip, info in blocked.items():
+                logger.info(
+                    "Blocked in window: ip=%s client=%s uri=%s count=%s rule=%s (threshold=%s)",
+                    ip,
+                    info["client"],
+                    info["uri"],
+                    info["count"],
+                    info["rule"],
+                    self.config.block_threshold,
+                )
+        else:
+            logger.info(
+                "No qualifying BLOCK events in last %s min "
+                "(need BLOCK on /api/token/ with registry IP, or /dem_* URI)",
+                self.config.block_window_minutes,
+            )
+
+        active = self.state.list_active_sessions()
+        if active:
+            logger.info("Active debug session(s): %s", ", ".join(active.keys()))
+        else:
+            logger.info("Active debug session(s): none")
+
         self.detect_and_allow(registry)
         self.check_hits_and_remove()
         self.state.touch_run()
+        logger.info("Scan complete")
 
     def run_forever(self) -> None:
         logger.info(
-            "WAF monitor started (interval=%ss, block_threshold=%s, hits_to_remove=%s)",
+            "WAF monitor started (interval=%ss, block_threshold=%s, hits_to_remove=%s, window=%sm)",
             self.config.monitor_interval,
             self.config.block_threshold,
             self.config.hits_to_remove,
+            self.config.block_window_minutes,
+        )
+        logger.info(
+            "WAF logs: s3://%s/%s",
+            self.config.waf_log_bucket,
+            self.config.waf_log_prefix,
         )
         while True:
             try:
