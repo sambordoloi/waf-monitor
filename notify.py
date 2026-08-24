@@ -38,10 +38,13 @@ def format_debug_done(ip: str, client: str, reason: str, elk_hits: list[dict]) -
         f"Reason: `{reason}`\n"
         f"ELK hits: `{len(elk_hits)}`",
     ]
-    for hit in elk_hits[:3]:
-        lines.append(
-            f"• user=`{hit.get('username')}` status=`{hit.get('status')}` "
-            f"ua=`{hit.get('user_agent')}` time=`{hit.get('time')}`"
-        )
+    if elk_hits:
+        for hit in elk_hits[:3]:
+            lines.append(
+                f"• user=`{hit.get('username')}` status=`{hit.get('status')}` "
+                f"ua=`{hit.get('user_agent')}` time=`{hit.get('time')}`"
+            )
+    else:
+        lines.append("• _No ELK hits yet — ingest may lag; search manually if needed._")
     lines.append("_Passwords are never included._")
     return "\n".join(lines)

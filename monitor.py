@@ -61,25 +61,26 @@ class WafMonitor:
             if started_at.tzinfo is None:
                 started_at = started_at.replace(tzinfo=timezone.utc)
 
-            elk_hits = []
-            hit_count = 0
-            if self.elk:
-                elk_hits = self.elk.find_token_hits(ip, started_at)
-                hit_count = len(elk_hits)
-            else:
-                hit_count = self.logs.count_allows_since(ip, started_at, session.get("uri"))
-
-            if hit_count >= self.config.hits_to_remove:
+            # Trigger on WAF ALLOW (fast) — remove IP first, then query ELK for debug details.
+            waf_allow_count = self.logs.count_allows_since(ip, started_at, session.get("uri"))
+            if waf_allow_count >= self.config.hits_to_remove:
                 self.waf.remove_ip_from_debug_set(ip)
-                self.state.mark_done(ip, reason=f"{hit_count}_hit(s)_seen")
+                logger.info(
+                    "Removed %s from debug set after %s WAF ALLOW(s); checking ELK",
+                    ip,
+                    waf_allow_count,
+                )
+
+                elk_hits = self.elk.find_token_hits(ip, started_at) if self.elk else []
+                self.state.mark_done(ip, reason=f"{waf_allow_count}_waf_allow(s)_then_elk")
                 msg = format_debug_done(
                     ip=ip,
                     client=session.get("client", "unknown"),
-                    reason=f"{hit_count} hit(s)",
+                    reason=f"{waf_allow_count} WAF ALLOW(s), then ELK check",
                     elk_hits=elk_hits,
                 )
                 notify_slack(self.config.slack_webhook_url, msg)
-                logger.info("Debug session closed for %s after %s hit(s)", ip, hit_count)
+                logger.info("Debug session closed for %s", ip)
                 continue
 
             age = datetime.now(timezone.utc) - started_at

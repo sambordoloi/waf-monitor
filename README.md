@@ -9,8 +9,8 @@ Every 60s loop:
   1. Scan WAF S3 logs (last 30m)
   2. BLOCK on /api/token/ (registry IP) or /dem_* ?
   3. If blocked >= 10 times → add IP to debug-temp-allow
-  4. If debug IP has >= 1 ELK hit → remove IP + Slack report
-  5. If no hit in 5 min → remove IP (fail-safe)
+  4. If debug IP has >= 1 WAF ALLOW → remove IP immediately, then query ELK + Slack
+  5. If no WAF ALLOW in 5 min → remove IP (fail-safe)
 ```
 
 ## Prerequisites
