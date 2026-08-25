@@ -189,6 +189,11 @@ class WafLogReader:
             }
         return result
 
+    def blocked_api_report(self, registry: dict[str, str], hours: int = 24) -> list[dict[str, Any]]:
+        from block_report import blocked_api_report as build_report
+
+        return build_report(self, registry, hours=hours)
+
     def _record_matches_session(
         self,
         record: dict[str, Any],

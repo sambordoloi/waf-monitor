@@ -46,6 +46,44 @@ Removes the IP from the WAF debug temp-allow set and clears its session in state
 docker compose exec waf-monitor python monitor.py remove-ip 49.37.111.213
 ```
 
+### Slack notifications
+
+Set `SLACK_WEBHOOK_URL` in `.env`. The monitor sends:
+
+1. **IP added** — when an IP is added to temp allow (`:warning: WAF debug — IP added`)
+2. **Client identified** — after debug completes with ELK username (`:white_check_mark: Client: DEVOPS`)
+
+### 24h block report (`/api*`)
+
+All WAF blocks on URIs starting with `/api`, with ELK username per IP:
+
+```bash
+# Print report
+docker compose exec waf-monitor python monitor.py report-24h
+
+# Post to Slack
+docker compose exec waf-monitor python monitor.py report-24h --slack
+
+# Custom window
+docker compose exec waf-monitor python monitor.py report-24h --hours 24 --slack
+```
+
+Cron example (optional — built-in scheduler runs at 08:00 IST if `DAILY_REPORT_ENABLED=true`):
+
+```bash
+# Manual run
+docker compose exec waf-monitor python monitor.py report-24h --slack
+```
+
+Built-in schedule (no cron needed): set in `.env`:
+
+```bash
+DAILY_REPORT_ENABLED=true
+DAILY_REPORT_HOUR_IST=8
+DAILY_REPORT_HOURS=24
+SLACK_WEBHOOK_URL=https://hooks.slack.com/...
+```
+
 ## Environment variables
 
 | Variable | Description |
@@ -63,7 +101,10 @@ docker compose exec waf-monitor python monitor.py remove-ip 49.37.111.213
 | `ELK_INDEX` | Index pattern e.g. `cv2*` |
 | `APP_LOG_PATH` | Optional local log (only if `TOKEN_LOOKUP=local` or `both`) |
 | `ELK_WINDOW_MINUTES` | ELK search window (default `60` = last 1 hour) |
-| `SLACK_WEBHOOK_URL` | Optional Slack webhook |
+| `SLACK_WEBHOOK_URL` | Slack webhook — IP added + client name + daily report |
+| `DAILY_REPORT_ENABLED` | Auto 24h report at 08:00 IST (default `true`) |
+| `DAILY_REPORT_HOUR_IST` | Hour in IST (default `8`) |
+| `DAILY_REPORT_HOURS` | Report lookback hours (default `24`) |
 
 ## IAM permissions
 

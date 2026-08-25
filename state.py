@@ -68,3 +68,13 @@ class StateStore:
             data = self._read()
             data["last_run"] = datetime.now(timezone.utc).isoformat()
             self._write(data)
+
+    def get_last_daily_report_date(self) -> str | None:
+        with self._lock:
+            return self._read().get("last_daily_report_date")
+
+    def set_last_daily_report_date(self, date_ist: str) -> None:
+        with self._lock:
+            data = self._read()
+            data["last_daily_report_date"] = date_ist
+            self._write(data)

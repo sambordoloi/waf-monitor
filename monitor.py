@@ -4,13 +4,17 @@ import logging
 import sys
 import time
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from config import Config
+from elk_client import ElkClient
+from notify import format_block_report, format_debug_done, format_debug_started, notify_slack
 from token_log_client import TokenLogClient
-from notify import format_debug_done, format_debug_started, notify_slack
 from state import StateStore
 from waf_client import WafClient, normalize_ip_set_id
 from waf_logs import WafLogReader
+
+IST = ZoneInfo("Asia/Kolkata")
 
 logging.basicConfig(
     level=logging.INFO,
@@ -29,6 +33,23 @@ class WafMonitor:
         self.token_logs = TokenLogClient(config)
         self._last_full_scan = 0.0
         self._last_wait_log: dict[str, float] = {}
+
+    def maybe_run_daily_report(self) -> None:
+        if not self.config.daily_report_enabled:
+            return
+        now_ist = datetime.now(IST)
+        if now_ist.hour < self.config.daily_report_hour_ist:
+            return
+        today = now_ist.date().isoformat()
+        if self.state.get_last_daily_report_date() == today:
+            return
+        logger.info("Running daily block report (%sh, /api*) at %s IST", self.config.daily_report_hours, now_ist.strftime("%H:%M"))
+        run_block_report(
+            self.config,
+            hours=self.config.daily_report_hours,
+            send_slack=bool(self.config.slack_webhook_url),
+        )
+        self.state.set_last_daily_report_date(today)
 
     def detect_and_allow(self, registry: dict[str, str], blocked: dict) -> None:
         for ip, info in blocked.items():
@@ -205,6 +226,12 @@ class WafMonitor:
             self.config.registry_only,
             self.config.log_source,
         )
+        if self.config.daily_report_enabled:
+            logger.info(
+                "Daily report: %sh /api* blocks at %s:00 IST → Slack",
+                self.config.daily_report_hours,
+                self.config.daily_report_hour_ist,
+            )
         if self.config.log_source == "cloudwatch":
             logger.info("WAF logs: CloudWatch log group %s", self.config.cloudwatch_log_group)
         else:
@@ -219,6 +246,7 @@ class WafMonitor:
             )
         while True:
             try:
+                self.maybe_run_daily_report()
                 active = self.state.list_active_sessions()
                 if active:
                     self.check_hits_and_remove()
@@ -233,6 +261,27 @@ class WafMonitor:
             except Exception:
                 logger.exception("Monitor iteration failed")
                 time.sleep(self.config.active_poll_interval)
+
+
+def run_block_report(config: Config, hours: int, send_slack: bool) -> None:
+    waf = WafClient(config)
+    logs = WafLogReader(config)
+    registry = waf.load_registry()
+    rows = logs.blocked_api_report(registry, hours=hours)
+
+    elk = ElkClient(config) if config.elk_url else None
+    since = datetime.now(timezone.utc) - timedelta(hours=hours)
+    if elk:
+        for row in rows:
+            username = elk.find_username_for_ip(row["ip"], since=since, hours=hours)
+            if username:
+                row["username"] = username
+
+    text = format_block_report(rows, hours)
+    print(text)
+    if send_slack:
+        notify_slack(config.slack_webhook_url, text)
+    logger.info("Block report done (%s IP(s), last %sh)", len(rows), hours)
 
 
 def remove_ip_for_debug(config: Config, ip: str) -> None:
@@ -259,6 +308,13 @@ def main() -> None:
     )
     remove_parser.add_argument("ip", help="Client IP to remove, e.g. 49.37.111.213")
 
+    report_parser = subparsers.add_parser(
+        "report-24h",
+        help="Report blocked /api* IPs in last 24h with ELK usernames",
+    )
+    report_parser.add_argument("--hours", type=int, default=24, help="Lookback hours (default 24)")
+    report_parser.add_argument("--slack", action="store_true", help="Post report to Slack")
+
     args = parser.parse_args()
     command = args.command or "run"
 
@@ -269,6 +325,13 @@ def main() -> None:
 
     if command == "remove-ip":
         remove_ip_for_debug(config, args.ip.strip())
+        return
+
+    if command == "report-24h":
+        if config.log_source == "cloudwatch" and not config.cloudwatch_log_group.strip():
+            logger.error("CLOUDWATCH_LOG_GROUP is required when LOG_SOURCE=cloudwatch")
+            sys.exit(1)
+        run_block_report(config, hours=args.hours, send_slack=args.slack)
         return
 
     if config.log_source == "cloudwatch" and not config.cloudwatch_log_group.strip():

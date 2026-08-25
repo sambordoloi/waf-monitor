@@ -52,3 +52,8 @@ class Config:
 
     slack_webhook_url = os.getenv("SLACK_WEBHOOK_URL", "")
     state_file = os.getenv("STATE_FILE", "/data/state.json")
+
+    # Daily /api* block report at 08:00 IST
+    daily_report_enabled = env_bool("DAILY_REPORT_ENABLED", True)
+    daily_report_hour_ist = env_int("DAILY_REPORT_HOUR_IST", 8)
+    daily_report_hours = env_int("DAILY_REPORT_HOURS", 24)
