@@ -208,6 +208,10 @@ class WafMonitor:
         if self.config.log_source == "cloudwatch":
             logger.info("WAF logs: CloudWatch log group %s", self.config.cloudwatch_log_group)
         else:
+            logger.warning(
+                "LOG_SOURCE=s3 — ALLOW detection is slow (minutes). "
+                "Set LOG_SOURCE=cloudwatch and CLOUDWATCH_LOG_GROUP in .env"
+            )
             logger.info(
                 "WAF logs: s3://%s/%s",
                 self.config.waf_log_bucket,

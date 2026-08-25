@@ -45,7 +45,8 @@ class Config:
     elk_verify_ssl = env_bool("ELK_VERIFY_SSL", True)
     elk_window_minutes = env_int("ELK_WINDOW_MINUTES", 60)
 
-    # Local app/nginx log file(s) for username lookup (comma-separated). Preferred over ELK.
+    # Token username lookup: elk (default), local, or both
+    token_lookup = os.getenv("TOKEN_LOOKUP", "elk").lower()
     app_log_path = os.getenv("APP_LOG_PATH", "")
     app_log_tail_mb = env_int("APP_LOG_TAIL_MB", 50)
 

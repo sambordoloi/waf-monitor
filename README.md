@@ -1,6 +1,6 @@
 # WAF Debug Monitor (Docker)
 
-Continuously monitors **WAF logs** (CloudWatch by default) for blocked valid client APIs, temporarily allowlists the IP, removes it after **1 WAF ALLOW**, looks up username from **local app log file** (or ELK fallback), and posts debug info to Slack.
+Continuously monitors **WAF logs** (CloudWatch by default) for blocked valid client APIs, temporarily allowlists the IP, removes it after **1 WAF ALLOW**, looks up username from **ELK** (`cv2*` nginx backend logs), and posts debug info to Slack.
 
 ## Flow
 
@@ -18,7 +18,7 @@ Every 60s loop:
 1. WAF logging to **CloudWatch** (default) — set `LOG_SOURCE=s3` to use S3 instead (slower ALLOW detection)
 2. WAF IP set `debug_temp_allow_ip` + high-priority ALLOW rule
 3. Client registry at `s3://aws-waf-logs-cv3/config/waf-ip-clients.json` (optional, for names)
-4. App/nginx log file mounted into container (`APP_LOG_PATH`) — **preferred** for username lookup; ELK optional fallback
+4. ELK with nginx backend logs in `cv2*` (same format as `access_api.log` — `http_x_forwarded_for`, `request_body`)
 5. IAM permissions (see below)
 
 ## Setup
@@ -26,11 +26,7 @@ Every 60s loop:
 ```bash
 cd waf-monitor
 cp .env.example .env
-# Edit .env: DEBUG_IP_SET_ID, CLOUDWATCH_LOG_GROUP, APP_LOG_PATH, etc.
-
-# In docker-compose.yml, mount the nginx backend log:
-#   - /var/log/nginx/backend/access_api.log:/var/log/nginx/backend/access_api.log:ro
-# Set APP_LOG_PATH=/var/log/nginx/backend/access_api.log
+# Edit .env: DEBUG_IP_SET_ID, CLOUDWATCH_LOG_GROUP, ELK_URL, ELK_INDEX=cv2*
 
 docker compose up -d --build
 docker compose logs -f waf-monitor
@@ -39,7 +35,7 @@ docker compose logs -f waf-monitor
 You should see at startup:
 
 ```text
-Token lookup: local log path(s) /var/log/nginx/backend/access_api.log
+Token lookup: ELK index cv2*
 ```
 
 ### Remove an IP (manual debug reset)
@@ -62,10 +58,10 @@ docker compose exec waf-monitor python monitor.py remove-ip 49.37.111.213
 | `LOG_SOURCE` | `cloudwatch` (default) or `s3` |
 | `CLOUDWATCH_LOG_GROUP` | **Required** when using CloudWatch — your WAF log group name |
 | `HITS_TO_REMOVE` | Remove after N hits (default `1`) |
-| `APP_LOG_PATH` | **Preferred** — path(s) to nginx/app log inside container (comma-separated) |
-| `APP_LOG_TAIL_MB` | How many MB from end of log file to scan (default `50`) |
-| `ELK_URL` | Optional ELK fallback if local log has no hit |
+| `TOKEN_LOOKUP` | `elk` (default), `local`, or `both` |
+| `ELK_URL` | Elasticsearch URL for username lookup |
 | `ELK_INDEX` | Index pattern e.g. `cv2*` |
+| `APP_LOG_PATH` | Optional local log (only if `TOKEN_LOOKUP=local` or `both`) |
 | `ELK_WINDOW_MINUTES` | ELK search window (default `60` = last 1 hour) |
 | `SLACK_WEBHOOK_URL` | Optional Slack webhook |
 
@@ -113,5 +109,5 @@ docker compose exec waf-monitor python monitor.py remove-ip 49.37.111.213
 - Passwords from ELK `request_body` are **never** sent to Slack.
 - Monitors **all blocked IPs** on `/api/token/` and `/dem_*` URIs (set `REGISTRY_ONLY=true` for legacy registry-only token filtering).
 - Each IP is debugged **at most once** — completed sessions are never re-added.
-- Registry file is optional — `request_body.username` from **APP_LOG_PATH** (or ELK) is used when found.
+- Registry file is optional — username from ELK `request_body` / `message` field is used when found.
 - State is persisted in Docker volume `/data/state.json`.
