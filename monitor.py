@@ -4,7 +4,6 @@ import logging
 import sys
 import time
 from datetime import datetime, timedelta, timezone
-from zoneinfo import ZoneInfo
 
 from config import Config
 from elk_client import ElkClient
@@ -13,8 +12,6 @@ from token_log_client import TokenLogClient
 from state import StateStore
 from waf_client import WafClient, normalize_ip_set_id
 from waf_logs import WafLogReader
-
-IST = ZoneInfo("Asia/Kolkata")
 
 logging.basicConfig(
     level=logging.INFO,
@@ -37,13 +34,20 @@ class WafMonitor:
     def maybe_run_daily_report(self) -> None:
         if not self.config.daily_report_enabled:
             return
-        now_ist = datetime.now(IST)
-        if now_ist.hour < self.config.daily_report_hour_ist:
+        now_utc = datetime.now(timezone.utc)
+        # 02:30 UTC = 08:00 IST — run once during 02:30–02:59 UTC only.
+        if now_utc.hour != self.config.daily_report_hour_utc:
             return
-        today = now_ist.date().isoformat()
+        if now_utc.minute < self.config.daily_report_minute_utc:
+            return
+        today = now_utc.date().isoformat()
         if self.state.get_last_daily_report_date() == today:
             return
-        logger.info("Running daily block report (%sh, /api*) at %s IST", self.config.daily_report_hours, now_ist.strftime("%H:%M"))
+        logger.info(
+            "Running daily block report (%sh, /api*) at %s UTC",
+            self.config.daily_report_hours,
+            now_utc.strftime("%H:%M"),
+        )
         run_block_report(
             self.config,
             hours=self.config.daily_report_hours,
@@ -228,9 +232,10 @@ class WafMonitor:
         )
         if self.config.daily_report_enabled:
             logger.info(
-                "Daily report: %sh /api* blocks at %s:00 IST → Slack",
+                "Daily report: %sh /api* blocks at %02d:%02d UTC (08:00 IST) → Slack",
                 self.config.daily_report_hours,
-                self.config.daily_report_hour_ist,
+                self.config.daily_report_hour_utc,
+                self.config.daily_report_minute_utc,
             )
         if self.config.log_source == "cloudwatch":
             logger.info("WAF logs: CloudWatch log group %s", self.config.cloudwatch_log_group)

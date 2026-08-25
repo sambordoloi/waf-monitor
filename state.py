@@ -73,8 +73,8 @@ class StateStore:
         with self._lock:
             return self._read().get("last_daily_report_date")
 
-    def set_last_daily_report_date(self, date_ist: str) -> None:
+    def set_last_daily_report_date(self, date_utc: str) -> None:
         with self._lock:
             data = self._read()
-            data["last_daily_report_date"] = date_ist
+            data["last_daily_report_date"] = date_utc
             self._write(data)

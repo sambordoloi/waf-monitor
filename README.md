@@ -68,18 +68,19 @@ docker compose exec waf-monitor python monitor.py report-24h --slack
 docker compose exec waf-monitor python monitor.py report-24h --hours 24 --slack
 ```
 
-Cron example (optional — built-in scheduler runs at 08:00 IST if `DAILY_REPORT_ENABLED=true`):
+Cron example (optional — built-in scheduler runs at 02:30 UTC if `DAILY_REPORT_ENABLED=true`):
 
 ```bash
 # Manual run
 docker compose exec waf-monitor python monitor.py report-24h --slack
 ```
 
-Built-in schedule (no cron needed): set in `.env`:
+Built-in schedule (server UTC): runs at **02:30 UTC** (= 08:00 IST):
 
 ```bash
 DAILY_REPORT_ENABLED=true
-DAILY_REPORT_HOUR_IST=8
+DAILY_REPORT_HOUR_UTC=2
+DAILY_REPORT_MINUTE_UTC=30
 DAILY_REPORT_HOURS=24
 SLACK_WEBHOOK_URL=https://hooks.slack.com/...
 ```
@@ -102,8 +103,9 @@ SLACK_WEBHOOK_URL=https://hooks.slack.com/...
 | `APP_LOG_PATH` | Optional local log (only if `TOKEN_LOOKUP=local` or `both`) |
 | `ELK_WINDOW_MINUTES` | ELK search window (default `60` = last 1 hour) |
 | `SLACK_WEBHOOK_URL` | Slack webhook — IP added + client name + daily report |
-| `DAILY_REPORT_ENABLED` | Auto 24h report at 08:00 IST (default `true`) |
-| `DAILY_REPORT_HOUR_IST` | Hour in IST (default `8`) |
+| `DAILY_REPORT_ENABLED` | Auto 24h report at 02:30 UTC / 08:00 IST (default `true`) |
+| `DAILY_REPORT_HOUR_UTC` | Hour UTC (default `2`) |
+| `DAILY_REPORT_MINUTE_UTC` | Minute UTC (default `30`) |
 | `DAILY_REPORT_HOURS` | Report lookback hours (default `24`) |
 
 ## IAM permissions
