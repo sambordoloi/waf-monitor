@@ -1,7 +1,7 @@
 import json
 import logging
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from elasticsearch import Elasticsearch
@@ -41,7 +41,9 @@ class ElkClient:
             kwargs["basic_auth"] = (config.elk_user, config.elk_password)
         self.es = Elasticsearch(**kwargs)
 
-    def find_token_hits(self, ip: str, since: datetime) -> list[dict[str, Any]]:
+    def find_token_hits(self, ip: str, window_minutes: int | None = None) -> list[dict[str, Any]]:
+        minutes = window_minutes if window_minutes is not None else self.config.elk_window_minutes
+        since = datetime.now(timezone.utc) - timedelta(minutes=minutes)
         query = {
             "query": {
                 "bool": {
@@ -80,5 +82,5 @@ class ElkClient:
             )
         return hits
 
-    def count_hits_since(self, ip: str, since: datetime) -> int:
-        return len(self.find_token_hits(ip, since))
+    def count_hits_since(self, ip: str, window_minutes: int | None = None) -> int:
+        return len(self.find_token_hits(ip, window_minutes=window_minutes))

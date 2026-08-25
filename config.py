@@ -41,6 +41,7 @@ class Config:
     elk_user = os.getenv("ELK_USER", "")
     elk_password = os.getenv("ELK_PASSWORD", "")
     elk_verify_ssl = env_bool("ELK_VERIFY_SSL", True)
+    elk_window_minutes = env_int("ELK_WINDOW_MINUTES", 60)
 
     slack_webhook_url = os.getenv("SLACK_WEBHOOK_URL", "")
     state_file = os.getenv("STATE_FILE", "/data/state.json")

@@ -43,6 +43,7 @@ docker compose logs -f waf-monitor
 | `HITS_TO_REMOVE` | Remove after N hits (default `1`) |
 | `ELK_URL` | Elasticsearch URL |
 | `ELK_INDEX` | Index pattern e.g. `nginx-*` |
+| `ELK_WINDOW_MINUTES` | ELK search window (default `60` = last 1 hour) |
 | `SLACK_WEBHOOK_URL` | Optional Slack webhook |
 
 ## IAM permissions

@@ -75,7 +75,7 @@ class WafMonitor:
                     waf_allow_count,
                 )
 
-                elk_hits = self.elk.find_token_hits(ip, started_at) if self.elk else []
+                elk_hits = self.elk.find_token_hits(ip) if self.elk else []
                 self.state.mark_done(ip, reason=f"{waf_allow_count}_waf_allow(s)_then_elk")
                 msg = format_debug_done(
                     ip=ip,
