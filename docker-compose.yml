@@ -7,6 +7,7 @@ services:
       - .env
     volumes:
       - waf-monitor-data:/data
+      - /var/log/nginx/backend/access_api.log:/var/log/nginx/backend/access_api.log:ro
     # AWS credentials: use one of the options below
     # environment:
     #   AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}

@@ -12,6 +12,8 @@ def env_bool(name: str, default: bool) -> bool:
 
 class Config:
     monitor_interval = env_int("MONITOR_INTERVAL", 60)
+    # Poll every N seconds while debug sessions are active (CloudWatch is near-real-time).
+    active_poll_interval = env_int("ACTIVE_POLL_INTERVAL", 5)
 
     aws_region = os.getenv("AWS_REGION", "ap-south-1")
     waf_scope = os.getenv("WAF_SCOPE", "REGIONAL")
@@ -42,6 +44,10 @@ class Config:
     elk_password = os.getenv("ELK_PASSWORD", "")
     elk_verify_ssl = env_bool("ELK_VERIFY_SSL", True)
     elk_window_minutes = env_int("ELK_WINDOW_MINUTES", 60)
+
+    # Local app/nginx log file(s) for username lookup (comma-separated). Preferred over ELK.
+    app_log_path = os.getenv("APP_LOG_PATH", "")
+    app_log_tail_mb = env_int("APP_LOG_TAIL_MB", 50)
 
     slack_webhook_url = os.getenv("SLACK_WEBHOOK_URL", "")
     state_file = os.getenv("STATE_FILE", "/data/state.json")

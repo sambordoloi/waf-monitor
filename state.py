@@ -54,6 +54,15 @@ class StateStore:
                 data["sessions"][ip]["finished_at"] = datetime.now(timezone.utc).isoformat()
             self._write(data)
 
+    def clear_session(self, ip: str) -> bool:
+        with self._lock:
+            data = self._read()
+            if ip not in data["sessions"]:
+                return False
+            del data["sessions"][ip]
+            self._write(data)
+            return True
+
     def touch_run(self) -> None:
         with self._lock:
             data = self._read()

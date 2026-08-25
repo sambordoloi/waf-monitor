@@ -42,7 +42,14 @@ class WafLogReader:
         else:
             self.s3 = boto3.client("s3", region_name=config.aws_region)
 
-    def _iter_records_cloudwatch(self, start: datetime, end: datetime) -> Iterator[dict[str, Any]]:
+    def _iter_records_cloudwatch(
+        self,
+        start: datetime,
+        end: datetime,
+        *,
+        filter_pattern: str | None = None,
+        quiet: bool = False,
+    ) -> Iterator[dict[str, Any]]:
         start_ms = int(start.timestamp() * 1000)
         end_ms = int(end.timestamp() * 1000)
         kwargs: dict[str, Any] = {
@@ -51,6 +58,8 @@ class WafLogReader:
             "endTime": end_ms,
             "limit": 10000,
         }
+        if filter_pattern:
+            kwargs["filterPattern"] = filter_pattern
         events_read = 0
         while True:
             response = self.logs.filter_log_events(**kwargs)
@@ -69,13 +78,14 @@ class WafLogReader:
             kwargs["nextToken"] = token
 
         if events_read == 0:
-            logger.warning(
-                "No WAF events in CloudWatch log group %s (%s → %s)",
-                self.config.cloudwatch_log_group,
-                start.isoformat(),
-                end.isoformat(),
-            )
-        else:
+            if not quiet:
+                logger.warning(
+                    "No WAF events in CloudWatch log group %s (%s → %s)",
+                    self.config.cloudwatch_log_group,
+                    start.isoformat(),
+                    end.isoformat(),
+                )
+        elif not quiet:
             logger.info(
                 "CloudWatch: read %s event(s) from %s",
                 events_read,
@@ -124,9 +134,18 @@ class WafLogReader:
                     continue
                 yield record
 
-    def _iter_records(self, start: datetime, end: datetime) -> Iterator[dict[str, Any]]:
+    def _iter_records(
+        self,
+        start: datetime,
+        end: datetime,
+        *,
+        filter_pattern: str | None = None,
+        quiet: bool = False,
+    ) -> Iterator[dict[str, Any]]:
         if self.source == "cloudwatch":
-            yield from self._iter_records_cloudwatch(start, end)
+            yield from self._iter_records_cloudwatch(
+                start, end, filter_pattern=filter_pattern, quiet=quiet
+            )
         else:
             yield from self._iter_records_s3(start, end)
 
@@ -170,18 +189,57 @@ class WafLogReader:
             }
         return result
 
+    def _record_matches_session(
+        self,
+        record: dict[str, Any],
+        ip: str,
+        since: datetime,
+        uri_filter: str | None,
+    ) -> bool:
+        ts = record_time(record)
+        if ts is None or ts < since:
+            return False
+        req = get_http_request(record)
+        if (req.get("clientIp") or req.get("clientip")) != ip:
+            return False
+        uri = req.get("uri") or ""
+        if not is_valid_api(uri):
+            return False
+        if uri_filter and uri != uri_filter:
+            return False
+        return True
+
     def has_allow_since(self, ip: str, since: datetime, uri_filter: str | None = None) -> bool:
         end = datetime.now(timezone.utc)
-        for record in self._iter_records(since, end):
+        allow_filter = '{ $.action = "ALLOW" }' if self.source == "cloudwatch" else None
+        for record in self._iter_records(
+            since,
+            end,
+            filter_pattern=allow_filter,
+            quiet=True,
+        ):
             if (record.get("action") or "").upper() != "ALLOW":
                 continue
-            req = get_http_request(record)
-            if (req.get("clientIp") or req.get("clientip")) != ip:
-                continue
-            uri = req.get("uri") or ""
-            if not is_valid_api(uri):
-                continue
-            if uri_filter and uri != uri_filter:
+            if not self._record_matches_session(record, ip, since, uri_filter):
                 continue
             return True
         return False
+
+    def session_event_counts(
+        self,
+        ip: str,
+        since: datetime,
+        uri_filter: str | None = None,
+    ) -> dict[str, int]:
+        end = datetime.now(timezone.utc)
+        allows = 0
+        blocks = 0
+        for record in self._iter_records(since, end, quiet=True):
+            if not self._record_matches_session(record, ip, since, uri_filter):
+                continue
+            action = (record.get("action") or "").upper()
+            if action == "ALLOW":
+                allows += 1
+            elif action == "BLOCK":
+                blocks += 1
+        return {"allows": allows, "blocks": blocks}
