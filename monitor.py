@@ -36,7 +36,8 @@ class WafMonitor:
         for ip, info in blocked.items():
             if info["count"] < self.config.block_threshold:
                 continue
-            if self.state.get_session(ip):
+            existing = self.state.get_session(ip)
+            if existing and existing.get("status") == "active":
                 continue
             if not self.config.debug_ip_set_id:
                 logger.error("DEBUG_IP_SET_ID is not configured")
