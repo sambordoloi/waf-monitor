@@ -2,10 +2,10 @@ import logging
 from datetime import datetime, timezone
 from typing import Any
 
-from elasticsearch import Elasticsearch
+from elasticsearch import ApiError, Elasticsearch
 
 from config import Config
-from log_parse import NGINX_BACKEND_RE, hit_from_fields, parse_nginx_backend_line, parse_username
+from log_parse import NGINX_BACKEND_RE, TOKEN_PATH_RE, hit_from_fields, parse_nginx_backend_line, parse_username
 
 logger = logging.getLogger(__name__)
 
@@ -21,94 +21,88 @@ class ElkClient:
             kwargs["basic_auth"] = (config.elk_user, config.elk_password)
         self.es = Elasticsearch(**kwargs)
 
-    def _ip_clauses(self, ip: str) -> list[dict[str, Any]]:
-        return [
-            {"wildcard": {"http_x_forwarded_for": f"*{ip}*"}},
-            {"match_phrase": {"http_x_forwarded_for": ip}},
-            {"wildcard": {"http_x_forwarded_for.keyword": f"*{ip}*"}},
-            {"wildcard": {"message": f"*http_x_forwarded_for: \"{ip}\"*"}},
-            {"wildcard": {"message": f"*http_x_forwarded_for: *{ip}*"}},
-            {"query_string": {"default_field": "message", "query": f"http_x_forwarded_for AND {ip}"}},
-        ]
-
-    def _token_clauses(self) -> list[dict[str, Any]]:
-        return [
-            {"wildcard": {"request": "*POST /api/token/*"}},
-            {"wildcard": {"request": "*post /api/token/*"}},
-            {"wildcard": {"request": "* /api/token/*"}},
-            {"wildcard": {"message": "*POST /api/token/*"}},
-            {"wildcard": {"message": "*post /api/token/*"}},
-            {"query_string": {"default_field": "message", "query": "POST AND /api/token/"}},
-        ]
-
-    def _time_clauses(
-        self,
-        since: datetime | None,
-        window_minutes: int,
-    ) -> list[dict[str, Any]]:
+    def _time_clause(self, since: datetime | None, window_minutes: int) -> dict[str, Any] | None:
         if since is not None:
             if since.tzinfo is None:
                 since = since.replace(tzinfo=timezone.utc)
-            iso = since.isoformat()
-            return [
-                {"range": {"@timestamp": {"gte": iso}}},
-                {"range": {"time_local": {"gte": iso}}},
-            ]
-        return [
-            {"range": {"@timestamp": {"gte": f"now-{window_minutes}m", "lte": "now"}}},
-        ]
+            return {"range": {"@timestamp": {"gte": since.isoformat()}}}
+        return {"range": {"@timestamp": {"gte": f"now-{window_minutes}m", "lte": "now"}}}
 
-    def _hit_from_source(self, src: dict[str, Any]) -> dict[str, Any]:
+    def _hit_from_source(self, src: dict[str, Any]) -> dict[str, Any] | None:
         message = str(src.get("message") or "")
         if NGINX_BACKEND_RE.match(message):
-            return hit_from_fields(parse_nginx_backend_line(message), source="elk")
-        merged = {k: str(v) if v is not None else "" for k, v in src.items()}
-        hit = hit_from_fields(merged, source="elk")
-        if not hit.get("username"):
-            body = src.get("request_body") or message
-            hit["username"] = parse_username(str(body))
+            hit = hit_from_fields(parse_nginx_backend_line(message), source="elk")
+        else:
+            merged = {k: str(v) if v is not None else "" for k, v in src.items()}
+            hit = hit_from_fields(merged, source="elk")
+            if not hit.get("username"):
+                body = src.get("request_body") or message
+                hit["username"] = parse_username(str(body))
+
+        request = str(hit.get("request") or message)
+        if not TOKEN_PATH_RE.search(request) and not TOKEN_PATH_RE.search(message):
+            return None
+        if not (hit.get("username") or hit.get("status") in {"200", "201"}):
+            return None
         return hit
 
     def _search(self, query: dict[str, Any]) -> list[dict[str, Any]]:
-        response = self.es.search(index=self.config.elk_index, body=query)
+        try:
+            response = self.es.search(index=self.config.elk_index, body=query)
+        except ApiError as exc:
+            logger.warning("ELK query failed (%s): %s", exc.status_code, exc.message)
+            return []
         hits: list[dict[str, Any]] = []
         for hit in response.get("hits", {}).get("hits", []):
-            src = hit.get("_source", {})
-            parsed = self._hit_from_source(src)
-            if parsed.get("username") or parsed.get("status") in {"200", "201"}:
+            parsed = self._hit_from_source(hit.get("_source", {}))
+            if parsed:
                 hits.append(parsed)
         return hits
 
     def _run_queries(self, ip: str, since: datetime | None, window_minutes: int) -> list[dict[str, Any]]:
-        ip_should = {"bool": {"should": self._ip_clauses(ip), "minimum_should_match": 1}}
-        token_should = {"bool": {"should": self._token_clauses(), "minimum_should_match": 1}}
-        message_must = [
-            {"wildcard": {"message": f"*http_x_forwarded_for: \"{ip}\"*"}},
-            {"wildcard": {"message": "*POST /api/token/*"}},
+        # Same query that works in Kibana: match_phrase on message for the client IP.
+        base_must: list[dict[str, Any]] = [
+            {"match_phrase": {"message": ip}},
+            {"match_phrase": {"message": "POST /api/token/"}},
         ]
 
         attempts: list[dict[str, Any]] = []
-        for time_clause in self._time_clauses(since, window_minutes):
+        time_clause = self._time_clause(since, window_minutes)
+
+        if time_clause:
             attempts.append(
                 {
-                    "query": {"bool": {"must": [ip_should, token_should, time_clause]}},
-                    "size": 10,
-                    "sort": [{"@timestamp": "desc"}],
-                }
-            )
-            attempts.append(
-                {
-                    "query": {"bool": {"must": message_must + [time_clause]}},
+                    "query": {"bool": {"must": base_must + [time_clause]}},
                     "size": 10,
                     "sort": [{"@timestamp": "desc"}],
                 }
             )
 
+        # Fallback without time filter (ingest lag).
         attempts.append(
-            {"query": {"bool": {"must": [ip_should, token_should]}}, "size": 10, "sort": [{"@timestamp": "desc"}]}
+            {
+                "query": {"bool": {"must": base_must}},
+                "size": 10,
+                "sort": [{"@timestamp": "desc"}],
+            }
         )
+
+        # IP only — filter /api/token/ when parsing hits.
+        ip_only = [{"match_phrase": {"message": ip}}]
+        if time_clause:
+            attempts.append(
+                {
+                    "query": {"bool": {"must": ip_only + [time_clause]}},
+                    "size": 20,
+                    "sort": [{"@timestamp": "desc"}],
+                }
+            )
         attempts.append(
-            {"query": {"bool": {"must": message_must}}, "size": 10, "sort": [{"@timestamp": "desc"}]}
+            {
+                "query": {"bool": {"must": ip_only}},
+                "size": 20,
+                "sort": [{"@timestamp": "desc"}],
+            }
         )
 
         for query in attempts:
