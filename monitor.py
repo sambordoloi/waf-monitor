@@ -36,6 +36,8 @@ class WafMonitor:
         for ip, info in blocked.items():
             if info["count"] < self.config.block_threshold:
                 continue
+            if self.state.was_debugged(ip):
+                continue
             existing = self.state.get_session(ip)
             if existing and existing.get("status") == "active":
                 continue
@@ -66,22 +68,19 @@ class WafMonitor:
             if started_at.tzinfo is None:
                 started_at = started_at.replace(tzinfo=timezone.utc)
 
-            # Trigger on WAF ALLOW (fast) — remove IP first, then query ELK for debug details.
-            waf_allow_count = self.logs.count_allows_since(ip, started_at, session.get("uri"))
-            if waf_allow_count >= self.config.hits_to_remove:
+            if self.logs.has_allow_since(ip, started_at, session.get("uri")):
                 self.waf.remove_ip_from_debug_set(ip)
-                logger.info(
-                    "Removed %s from debug set after %s WAF ALLOW(s); checking ELK",
-                    ip,
-                    waf_allow_count,
-                )
+                logger.info("Removed %s from debug set after WAF ALLOW; checking ELK", ip)
 
-                elk_hits = self.elk.find_token_hits(ip) if self.elk else []
-                self.state.mark_done(ip, reason=f"{waf_allow_count}_waf_allow(s)_then_elk")
+                elk_hits = self.elk.find_token_hits(ip, since=started_at) if self.elk else []
+                client = session.get("client", "unknown")
+                if elk_hits and elk_hits[0].get("username"):
+                    client = elk_hits[0]["username"]
+                self.state.mark_done(ip, reason="waf_allow_then_elk")
                 msg = format_debug_done(
                     ip=ip,
-                    client=session.get("client", "unknown"),
-                    reason=f"{waf_allow_count} WAF ALLOW(s), then ELK check",
+                    client=client,
+                    reason="1 WAF ALLOW, then ELK check",
                     elk_hits=elk_hits,
                 )
                 notify_slack(self.config.slack_webhook_url, msg)
@@ -168,6 +167,9 @@ class WafMonitor:
 
 def main() -> None:
     config = Config()
+    if config.log_source == "cloudwatch" and not config.cloudwatch_log_group.strip():
+        logger.error("CLOUDWATCH_LOG_GROUP is required when LOG_SOURCE=cloudwatch — set it in .env")
+        sys.exit(1)
     if not config.debug_ip_set_id:
         logger.warning("DEBUG_IP_SET_ID is empty — set it in .env before production use")
     else:

@@ -23,6 +23,10 @@ class StateStore:
         with self._lock:
             return self._read()["sessions"].get(ip)
 
+    def was_debugged(self, ip: str) -> bool:
+        session = self.get_session(ip)
+        return bool(session and session.get("status") == "done")
+
     def list_active_sessions(self) -> dict[str, dict[str, Any]]:
         with self._lock:
             sessions = self._read()["sessions"]

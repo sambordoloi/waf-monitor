@@ -170,9 +170,8 @@ class WafLogReader:
             }
         return result
 
-    def count_allows_since(self, ip: str, since: datetime, uri_filter: str | None = None) -> int:
+    def has_allow_since(self, ip: str, since: datetime, uri_filter: str | None = None) -> bool:
         end = datetime.now(timezone.utc)
-        count = 0
         for record in self._iter_records(since, end):
             if (record.get("action") or "").upper() != "ALLOW":
                 continue
@@ -184,5 +183,5 @@ class WafLogReader:
                 continue
             if uri_filter and uri != uri_filter:
                 continue
-            count += 1
-        return count
+            return True
+        return False
