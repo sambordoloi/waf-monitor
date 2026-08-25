@@ -1,12 +1,12 @@
 # WAF Debug Monitor (Docker)
 
-Continuously monitors WAF S3 logs for **blocked valid client APIs**, temporarily allowlists the IP, removes it after **1 ELK/WAF hit**, and posts debug info to Slack.
+Continuously monitors **CloudWatch WAF logs** (or S3) for blocked valid client APIs, temporarily allowlists the IP, removes it after **1 WAF ALLOW**, queries ELK, and posts debug info to Slack.
 
 ## Flow
 
 ```text
 Every 60s loop:
-  1. Scan WAF S3 logs (last 30m)
+  1. Scan CloudWatch log group aws-waf-logs-cv1 (last 30m) — ~1–2 min latency
   2. BLOCK on /api/token/ or /dem_* (all IPs by default)
   3. If blocked >= threshold → add IP to debug-temp-allow
   4. If debug IP has >= 1 WAF ALLOW → remove IP immediately, then query ELK + Slack
@@ -15,9 +15,9 @@ Every 60s loop:
 
 ## Prerequisites
 
-1. WAF logging to S3 (already configured)
-2. WAF IP set `debug-temp-allow` + high-priority ALLOW rule
-3. Client registry at `s3://aws-waf-logs-cv3/config/waf-ip-clients.json`
+1. WAF logging to **CloudWatch Logs** (`aws-waf-logs-cv1`) — or set `LOG_SOURCE=s3`
+2. WAF IP set `debug_temp_allow_ip` + high-priority ALLOW rule
+3. Client registry at `s3://aws-waf-logs-cv3/config/waf-ip-clients.json` (optional, for names)
 4. ELK with nginx logs (`http_x_forwarded_for`, `request_body`, `request`)
 5. IAM permissions (see below)
 
@@ -53,16 +53,18 @@ docker compose logs -f waf-monitor
   "Statement": [
     {
       "Effect": "Allow",
-      "Action": ["s3:GetObject", "s3:ListBucket"],
-      "Resource": [
-        "arn:aws:s3:::aws-waf-logs-cv3",
-        "arn:aws:s3:::aws-waf-logs-cv3/*"
-      ]
+      "Action": ["logs:FilterLogEvents", "logs:DescribeLogGroups"],
+      "Resource": "arn:aws:logs:ap-south-1:231322554539:log-group:aws-waf-logs-cv1:*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": ["s3:GetObject"],
+      "Resource": "arn:aws:s3:::aws-waf-logs-cv3/config/*"
     },
     {
       "Effect": "Allow",
       "Action": ["wafv2:GetIPSet", "wafv2:UpdateIPSet"],
-      "Resource": "arn:aws:wafv2:ap-south-1:231322554539:regional/ipset/debug-temp-allow/*"
+      "Resource": "arn:aws:wafv2:ap-south-1:231322554539:regional/ipset/debug_temp_allow_ip/*"
     }
   ]
 }

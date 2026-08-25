@@ -10,11 +10,20 @@ from config import Config
 logger = logging.getLogger(__name__)
 
 
+def normalize_ip_set_id(value: str) -> str:
+    """Accept UUID or full ARN; WAF API requires UUID only."""
+    value = value.strip()
+    if value.startswith("arn:"):
+        return value.rsplit("/", 1)[-1]
+    return value
+
+
 class WafClient:
     def __init__(self, config: Config):
         self.config = config
         self.client = boto3.client("wafv2", region_name=config.aws_region)
         self.s3 = boto3.client("s3", region_name=config.aws_region)
+        self.debug_ip_set_id = normalize_ip_set_id(config.debug_ip_set_id)
 
     def load_registry(self) -> dict[str, str]:
         try:
@@ -43,7 +52,7 @@ class WafClient:
         resp = self.client.get_ip_set(
             Name=self.config.debug_ip_set_name,
             Scope=self.config.waf_scope,
-            Id=self.config.debug_ip_set_id,
+            Id=self.debug_ip_set_id,
         )
         addresses = list(resp["IPSet"]["Addresses"])
         if cidr in addresses:
@@ -52,7 +61,7 @@ class WafClient:
         self.client.update_ip_set(
             Name=self.config.debug_ip_set_name,
             Scope=self.config.waf_scope,
-            Id=self.config.debug_ip_set_id,
+            Id=self.debug_ip_set_id,
             Addresses=addresses,
             LockToken=resp["LockToken"],
         )
@@ -63,7 +72,7 @@ class WafClient:
         resp = self.client.get_ip_set(
             Name=self.config.debug_ip_set_name,
             Scope=self.config.waf_scope,
-            Id=self.config.debug_ip_set_id,
+            Id=self.debug_ip_set_id,
         )
         addresses = list(resp["IPSet"]["Addresses"])
         if cidr not in addresses:
@@ -72,7 +81,7 @@ class WafClient:
         self.client.update_ip_set(
             Name=self.config.debug_ip_set_name,
             Scope=self.config.waf_scope,
-            Id=self.config.debug_ip_set_id,
+            Id=self.debug_ip_set_id,
             Addresses=addresses,
             LockToken=resp["LockToken"],
         )

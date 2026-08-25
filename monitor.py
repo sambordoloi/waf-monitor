@@ -8,7 +8,7 @@ from config import Config
 from elk_client import ElkClient
 from notify import format_debug_done, format_debug_started, notify_slack
 from state import StateStore
-from waf_client import WafClient
+from waf_client import WafClient, normalize_ip_set_id
 from waf_logs import WafLogReader
 
 logging.basicConfig(
@@ -140,18 +140,23 @@ class WafMonitor:
 
     def run_forever(self) -> None:
         logger.info(
-            "WAF monitor started (interval=%ss, block_threshold=%s, hits_to_remove=%s, window=%sm, registry_only=%s)",
+            "WAF monitor started (interval=%ss, block_threshold=%s, hits_to_remove=%s, "
+            "window=%sm, registry_only=%s, log_source=%s)",
             self.config.monitor_interval,
             self.config.block_threshold,
             self.config.hits_to_remove,
             self.config.block_window_minutes,
             self.config.registry_only,
+            self.config.log_source,
         )
-        logger.info(
-            "WAF logs: s3://%s/%s",
-            self.config.waf_log_bucket,
-            self.config.waf_log_prefix,
-        )
+        if self.config.log_source == "cloudwatch":
+            logger.info("WAF logs: CloudWatch log group %s", self.config.cloudwatch_log_group)
+        else:
+            logger.info(
+                "WAF logs: s3://%s/%s",
+                self.config.waf_log_bucket,
+                self.config.waf_log_prefix,
+            )
         while True:
             try:
                 self.run_once()
@@ -164,6 +169,13 @@ def main() -> None:
     config = Config()
     if not config.debug_ip_set_id:
         logger.warning("DEBUG_IP_SET_ID is empty — set it in .env before production use")
+    else:
+        normalized = normalize_ip_set_id(config.debug_ip_set_id)
+        if normalized != config.debug_ip_set_id.strip():
+            logger.warning(
+                "DEBUG_IP_SET_ID looked like an ARN; using UUID %s (set UUID directly in .env)",
+                normalized,
+            )
     WafMonitor(config).run_forever()
 
 

@@ -1,35 +1,17 @@
 import gzip
 import json
 import logging
-from collections import Counter, defaultdict
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 from io import BytesIO
-from typing import Any
+from typing import Any, Iterator
 
 import boto3
 
 from config import Config
+from waf_log_common import client_from_uri, get_http_request, is_valid_api
 
 logger = logging.getLogger(__name__)
-
-
-def get_http_request(record: dict[str, Any]) -> dict[str, Any]:
-    return record.get("httpRequest") or record.get("httprequest") or {}
-
-
-def is_valid_api(uri: str) -> bool:
-    if uri == "/api/token/":
-        return True
-    if "/dem_" in uri:
-        return True
-    return False
-
-
-def client_from_uri(uri: str) -> str | None:
-    if "/dem_" not in uri:
-        return None
-    part = uri.split("dem_", 1)[1]
-    return part.split("/", 1)[0]
 
 
 def record_time(record: dict[str, Any]) -> datetime | None:
@@ -42,12 +24,65 @@ def record_time(record: dict[str, Any]) -> datetime | None:
         return None
 
 
+def parse_waf_record(raw: str | bytes) -> dict[str, Any] | None:
+    try:
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8")
+        return json.loads(raw.strip())
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return None
+
+
 class WafLogReader:
     def __init__(self, config: Config):
         self.config = config
-        self.s3 = boto3.client("s3", region_name=config.aws_region)
+        self.source = config.log_source
+        if self.source == "cloudwatch":
+            self.logs = boto3.client("logs", region_name=config.aws_region)
+        else:
+            self.s3 = boto3.client("s3", region_name=config.aws_region)
 
-    def _list_keys(self, start: datetime, end: datetime) -> list[str]:
+    def _iter_records_cloudwatch(self, start: datetime, end: datetime) -> Iterator[dict[str, Any]]:
+        start_ms = int(start.timestamp() * 1000)
+        end_ms = int(end.timestamp() * 1000)
+        kwargs: dict[str, Any] = {
+            "logGroupName": self.config.cloudwatch_log_group,
+            "startTime": start_ms,
+            "endTime": end_ms,
+            "limit": 10000,
+        }
+        events_read = 0
+        while True:
+            response = self.logs.filter_log_events(**kwargs)
+            for event in response.get("events", []):
+                record = parse_waf_record(event.get("message", ""))
+                if not record:
+                    continue
+                ts = record_time(record)
+                if ts is None or ts < start or ts > end:
+                    continue
+                events_read += 1
+                yield record
+            token = response.get("nextToken")
+            if not token:
+                break
+            kwargs["nextToken"] = token
+
+        if events_read == 0:
+            logger.warning(
+                "No WAF events in CloudWatch log group %s (%s → %s)",
+                self.config.cloudwatch_log_group,
+                start.isoformat(),
+                end.isoformat(),
+            )
+        else:
+            logger.info(
+                "CloudWatch: read %s event(s) from %s",
+                events_read,
+                self.config.cloudwatch_log_group,
+            )
+
+    def _list_s3_keys(self, start: datetime, end: datetime) -> list[str]:
         keys: list[str] = []
         hour = start.astimezone(timezone.utc).replace(minute=0, second=0, microsecond=0)
         end_utc = end.astimezone(timezone.utc)
@@ -62,8 +97,8 @@ class WafLogReader:
             hour += timedelta(hours=1)
         return sorted(set(keys))
 
-    def _iter_records(self, start: datetime, end: datetime):
-        keys = self._list_keys(start, end)
+    def _iter_records_s3(self, start: datetime, end: datetime) -> Iterator[dict[str, Any]]:
+        keys = self._list_s3_keys(start, end)
         if not keys:
             logger.warning(
                 "No WAF log files in s3://%s/%s (%s → %s)",
@@ -73,22 +108,27 @@ class WafLogReader:
                 end.isoformat(),
             )
             return
-        logger.debug("Reading %s WAF log file(s)", len(keys))
+        logger.info("S3: reading %s WAF log file(s)", len(keys))
         for key in keys:
             body = self.s3.get_object(Bucket=self.config.waf_log_bucket, Key=key)["Body"].read()
-            if key.endswith(".gz"):
-                lines = gzip.GzipFile(fileobj=BytesIO(body))
-            else:
-                lines = body.splitlines()
+            lines = gzip.GzipFile(fileobj=BytesIO(body)) if key.endswith(".gz") else body.splitlines()
             for raw_line in lines:
                 line = raw_line.strip() if isinstance(raw_line, bytes) else raw_line.strip()
                 if not line:
                     continue
-                record = json.loads(line)
+                record = parse_waf_record(line)
+                if not record:
+                    continue
                 ts = record_time(record)
                 if ts is None or ts < start or ts > end:
                     continue
                 yield record
+
+    def _iter_records(self, start: datetime, end: datetime) -> Iterator[dict[str, Any]]:
+        if self.source == "cloudwatch":
+            yield from self._iter_records_cloudwatch(start, end)
+        else:
+            yield from self._iter_records_s3(start, end)
 
     def blocked_valid_counts(
         self,

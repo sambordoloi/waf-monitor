@@ -16,6 +16,9 @@ class Config:
     aws_region = os.getenv("AWS_REGION", "ap-south-1")
     waf_scope = os.getenv("WAF_SCOPE", "REGIONAL")
 
+    # Log source: cloudwatch (fast) or s3 (delayed archive)
+    log_source = os.getenv("LOG_SOURCE", "cloudwatch").lower()
+    cloudwatch_log_group = os.getenv("CLOUDWATCH_LOG_GROUP", "aws-waf-logs-cv1")
     waf_log_bucket = os.getenv("WAF_LOG_BUCKET", "aws-waf-logs-cv3")
     waf_log_prefix = os.getenv(
         "WAF_LOG_PREFIX",
