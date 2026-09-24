@@ -7,6 +7,7 @@ from io import BytesIO
 from typing import Any, Iterator
 
 import boto3
+from botocore.exceptions import ClientError
 
 from config import Config
 from waf_log_common import client_from_uri, get_http_request, is_valid_api
@@ -34,8 +35,9 @@ def parse_waf_record(raw: str | bytes) -> dict[str, Any] | None:
 
 
 class WafLogReader:
-    def __init__(self, config: Config):
+    def __init__(self, config: Config, error_notifier=None):
         self.config = config
+        self.error_notifier = error_notifier
         self.source = config.log_source
         if self.source == "cloudwatch":
             self.logs = boto3.client("logs", region_name=config.aws_region)
@@ -62,7 +64,28 @@ class WafLogReader:
             kwargs["filterPattern"] = filter_pattern
         events_read = 0
         while True:
-            response = self.logs.filter_log_events(**kwargs)
+            try:
+                response = self.logs.filter_log_events(**kwargs)
+            except ClientError as exc:
+                code = exc.response.get("Error", {}).get("Code", "")
+                if self.error_notifier and code in {
+                    "ResourceNotFoundException",
+                    "ResourceNotFound",
+                }:
+                    self.error_notifier.notify(
+                        "cloudwatch_log_group",
+                        "CloudWatch log group not available",
+                        f"Log group: `{self.config.cloudwatch_log_group}`",
+                        exc,
+                    )
+                elif self.error_notifier:
+                    self.error_notifier.notify(
+                        "cloudwatch_read",
+                        "CloudWatch log read failed",
+                        f"Log group: `{self.config.cloudwatch_log_group}`",
+                        exc,
+                    )
+                raise
             for event in response.get("events", []):
                 record = parse_waf_record(event.get("message", ""))
                 if not record:
