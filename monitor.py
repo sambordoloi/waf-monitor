@@ -5,9 +5,16 @@ import sys
 import time
 from datetime import datetime, timedelta, timezone
 
+from alerts import ErrorNotifier
 from config import Config
 from elk_client import ElkClient
-from notify import format_block_report, format_debug_done, format_debug_started, notify_slack
+from notify import (
+    format_block_report,
+    format_debug_done,
+    format_debug_expired,
+    format_debug_started,
+    notify_slack,
+)
 from token_log_client import TokenLogClient
 from state import StateStore
 from waf_client import WafClient, normalize_ip_set_id
@@ -24,12 +31,42 @@ logger = logging.getLogger("waf-monitor")
 class WafMonitor:
     def __init__(self, config: Config):
         self.config = config
+        self.alerts = ErrorNotifier(
+            config.slack_webhook_url,
+            cooldown_seconds=config.error_alert_cooldown_seconds,
+        )
         self.state = StateStore(config.state_file)
-        self.waf = WafClient(config)
-        self.logs = WafLogReader(config)
-        self.token_logs = TokenLogClient(config)
+        self.waf = WafClient(config, error_notifier=self.alerts)
+        self.logs = WafLogReader(config, error_notifier=self.alerts)
+        self.token_logs = TokenLogClient(config, error_notifier=self.alerts)
         self._last_full_scan = 0.0
         self._last_wait_log: dict[str, float] = {}
+
+    def _add_ip_to_debug_set(self, ip: str) -> bool:
+        try:
+            self.waf.add_ip_to_debug_set(ip)
+            return True
+        except Exception as exc:
+            self.alerts.notify(
+                "waf_add_ip",
+                "Failed to add IP to debug set",
+                f"IP: `{ip}` set: `{self.config.debug_ip_set_name}`",
+                exc,
+            )
+            return False
+
+    def _remove_ip_from_debug_set(self, ip: str) -> bool:
+        try:
+            self.waf.remove_ip_from_debug_set(ip)
+            return True
+        except Exception as exc:
+            self.alerts.notify(
+                "waf_remove_ip",
+                "Failed to remove IP from debug set",
+                f"IP: `{ip}` set: `{self.config.debug_ip_set_name}`",
+                exc,
+            )
+            return False
 
     def maybe_run_daily_report(self) -> None:
         if not self.config.daily_report_enabled:
@@ -68,7 +105,8 @@ class WafMonitor:
                 logger.error("DEBUG_IP_SET_ID is not configured")
                 return
 
-            self.waf.add_ip_to_debug_set(ip)
+            if not self._add_ip_to_debug_set(ip):
+                continue
             self.state.start_session(
                 ip=ip,
                 uri=info["uri"],
@@ -115,11 +153,12 @@ class WafMonitor:
             if started_at.tzinfo is None:
                 started_at = started_at.replace(tzinfo=timezone.utc)
 
-            uri_filter = session.get("uri")
             age = datetime.now(timezone.utc) - started_at
 
-            if self.logs.has_allow_since(ip, started_at, uri_filter):
-                self.waf.remove_ip_from_debug_set(ip)
+            # Match any valid API URI for this IP — WAF may log /api/token vs /api/token/.
+            if self.logs.has_allow_since(ip, started_at, uri_filter=None):
+                if not self._remove_ip_from_debug_set(ip):
+                    continue
                 logger.info("Removed %s from debug set after WAF ALLOW", ip)
                 elk_hits = self.token_logs.find_token_hits(ip, since=started_at) if self.token_logs.enabled else []
                 self._close_debug_session(
@@ -134,7 +173,8 @@ class WafMonitor:
             if self.token_logs.enabled:
                 elk_hits = self.token_logs.find_token_hits(ip, since=started_at)
                 if elk_hits:
-                    self.waf.remove_ip_from_debug_set(ip)
+                    if not self._remove_ip_from_debug_set(ip):
+                        continue
                     logger.info(
                         "Removed %s from debug set after ELK /api/token/ hit (no WAF ALLOW yet)",
                         ip,
@@ -149,7 +189,7 @@ class WafMonitor:
                     continue
 
             if verbose or self._should_log_wait(ip):
-                counts = self.logs.session_event_counts(ip, started_at, uri_filter)
+                counts = self.logs.session_event_counts(ip, started_at, uri_filter=None)
                 logger.info(
                     "Waiting on %s: age=%ss allows=%s blocks_since_start=%s",
                     ip,
@@ -159,14 +199,42 @@ class WafMonitor:
                 )
 
             if age >= timedelta(minutes=self.config.debug_expire_minutes):
-                self.waf.remove_ip_from_debug_set(ip)
-                self.state.mark_done(ip, reason="expired_no_hits")
-                notify_slack(
-                    self.config.slack_webhook_url,
-                    f":hourglass: WAF debug expired for `{ip}` — no ELK/WAF hit in "
-                    f"{self.config.debug_expire_minutes}m",
-                )
-                logger.info("Debug session expired for %s", ip)
+                counts = self.logs.session_event_counts(ip, started_at, uri_filter=None)
+                elk_hits: list = []
+                if self.token_logs.enabled:
+                    elk_hits = self.token_logs.find_token_hits(
+                        ip,
+                        since=started_at,
+                        window_minutes=self.config.elk_window_minutes,
+                    )
+                self._remove_ip_from_debug_set(ip)
+                if elk_hits and elk_hits[0].get("username"):
+                    self._close_debug_session(
+                        ip,
+                        session,
+                        reason="ELK hit on expire (late ingest, no WAF ALLOW seen)",
+                        elk_hits=elk_hits,
+                    )
+                else:
+                    self.state.mark_done(ip, reason="expired_no_hits")
+                    notify_slack(
+                        self.config.slack_webhook_url,
+                        format_debug_expired(
+                            ip,
+                            expire_minutes=self.config.debug_expire_minutes,
+                            allows=counts["allows"],
+                            blocks=counts["blocks"],
+                            log_source=self.config.log_source,
+                            elk_hits=elk_hits,
+                        ),
+                    )
+                    logger.info(
+                        "Debug session expired for %s (allows=%s blocks=%s log_source=%s)",
+                        ip,
+                        counts["allows"],
+                        counts["blocks"],
+                        self.config.log_source,
+                    )
                 self._last_wait_log.pop(ip, None)
                 closed = True
         return closed
@@ -220,6 +288,12 @@ class WafMonitor:
         self._last_full_scan = time.time()
 
     def run_forever(self) -> None:
+        if not self.config.slack_webhook_url:
+            logger.warning(
+                "SLACK_WEBHOOK_URL is not set — debug notifications and error alerts are disabled"
+            )
+        else:
+            logger.info("Slack error alerts enabled (cooldown=%ss)", self.config.error_alert_cooldown_seconds)
         logger.info(
             "WAF monitor started (interval=%ss, active_poll=%ss, block_threshold=%s, "
             "window=%sm, registry_only=%s, log_source=%s)",
@@ -263,18 +337,25 @@ class WafMonitor:
                     self.run_full_scan()
                     self.check_hits_and_remove()
                     time.sleep(self.config.monitor_interval)
-            except Exception:
+            except Exception as exc:
                 logger.exception("Monitor iteration failed")
+                self.alerts.notify(
+                    "monitor_loop",
+                    "Monitor iteration failed",
+                    "Unexpected error in main loop (monitor will retry)",
+                    exc,
+                )
                 time.sleep(self.config.active_poll_interval)
 
 
 def run_block_report(config: Config, hours: int, send_slack: bool) -> None:
-    waf = WafClient(config)
-    logs = WafLogReader(config)
+    alerts = ErrorNotifier(config.slack_webhook_url, cooldown_seconds=config.error_alert_cooldown_seconds)
+    waf = WafClient(config, error_notifier=alerts)
+    logs = WafLogReader(config, error_notifier=alerts)
     registry = waf.load_registry()
     rows = logs.blocked_api_report(registry, hours=hours)
 
-    elk = ElkClient(config) if config.elk_url else None
+    elk = ElkClient(config, error_notifier=alerts) if config.elk_url else None
     since = datetime.now(timezone.utc) - timedelta(hours=hours)
     if elk:
         for row in rows:

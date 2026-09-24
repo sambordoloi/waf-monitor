@@ -12,13 +12,17 @@ logger = logging.getLogger(__name__)
 class TokenLogClient:
     """Find /api/token/ hits by IP — ELK default, optional local log file."""
 
-    def __init__(self, config: Config):
+    def __init__(self, config: Config, error_notifier=None):
         self.mode = config.token_lookup
         self.local = LocalLogClient(config) if config.app_log_path.strip() else None
-        self.elk = ElkClient(config) if config.elk_url else None
+        self.elk = ElkClient(config, error_notifier=error_notifier) if config.elk_url else None
 
-        if self.mode == "elk" and self.elk:
+        if self.mode in ("elk", "both") and self.elk:
             logger.info("Token lookup: ELK index %s", config.elk_index)
+            try:
+                self.elk.check_connection()
+            except Exception:
+                logger.warning("ELK connection check failed at startup")
         elif self.mode == "local" and self.local:
             logger.info("Token lookup: local log %s", config.app_log_path)
         elif self.mode == "both":

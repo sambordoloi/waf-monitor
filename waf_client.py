@@ -19,25 +19,33 @@ def normalize_ip_set_id(value: str) -> str:
 
 
 class WafClient:
-    def __init__(self, config: Config):
+    def __init__(self, config: Config, error_notifier=None):
         self.config = config
+        self.error_notifier = error_notifier
         self.client = boto3.client("wafv2", region_name=config.aws_region)
         self.s3 = boto3.client("s3", region_name=config.aws_region)
         self.debug_ip_set_id = normalize_ip_set_id(config.debug_ip_set_id)
 
+    def _registry_bucket(self) -> str:
+        return self.config.registry_s3_bucket or self.config.waf_log_bucket
+
     def load_registry(self) -> dict[str, str]:
+        bucket = self._registry_bucket()
+        key = self.config.registry_s3_key
         try:
-            obj = self.s3.get_object(
-                Bucket=self.config.waf_log_bucket,
-                Key=self.config.registry_s3_key,
-            )
+            obj = self.s3.get_object(Bucket=bucket, Key=key)
         except ClientError as exc:
-            if exc.response.get("Error", {}).get("Code") == "NoSuchKey":
-                logger.warning(
-                    "Registry file not found: s3://%s/%s",
-                    self.config.waf_log_bucket,
-                    self.config.registry_s3_key,
-                )
+            code = exc.response.get("Error", {}).get("Code", "")
+            if code in {"NoSuchKey", "NoSuchBucket", "404", "AccessDenied", "403"}:
+                detail = f"Registry: `s3://{bucket}/{key}` (set `REGISTRY_S3_BUCKET` / `WAF_LOG_BUCKET`)"
+                logger.warning("%s — %s", detail, exc)
+                if self.error_notifier:
+                    self.error_notifier.notify(
+                        "registry_s3",
+                        "Client registry S3 read failed",
+                        detail,
+                        exc,
+                    )
                 return {}
             raise
         raw = json.loads(obj["Body"].read())

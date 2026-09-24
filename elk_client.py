@@ -1,5 +1,5 @@
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from elasticsearch import ApiError, Elasticsearch
@@ -11,8 +11,9 @@ logger = logging.getLogger(__name__)
 
 
 class ElkClient:
-    def __init__(self, config: Config):
+    def __init__(self, config: Config, error_notifier=None):
         self.config = config
+        self.error_notifier = error_notifier
         kwargs: dict[str, Any] = {
             "hosts": [config.elk_url],
             "verify_certs": config.elk_verify_ssl,
@@ -21,10 +22,41 @@ class ElkClient:
             kwargs["basic_auth"] = (config.elk_user, config.elk_password)
         self.es = Elasticsearch(**kwargs)
 
+    def check_connection(self) -> None:
+        try:
+            self.es.info()
+        except Exception as exc:
+            if self.error_notifier:
+                self.error_notifier.notify(
+                    "elk_connect",
+                    "ELK not connecting",
+                    f"URL: `{self.config.elk_url}` index: `{self.config.elk_index}`",
+                    exc,
+                )
+            raise
+
+    def _notify_elk_query_error(self, exc: Exception) -> None:
+        if self.error_notifier:
+            self.error_notifier.notify(
+                "elk_query",
+                "ELK query failed",
+                f"URL: `{self.config.elk_url}` index: `{self.config.elk_index}`",
+                exc,
+            )
+
+    def _effective_since(self, since: datetime | None) -> datetime | None:
+        if since is None:
+            return None
+        if since.tzinfo is None:
+            since = since.replace(tzinfo=timezone.utc)
+        buffer = max(0, self.config.elk_since_buffer_minutes)
+        if buffer:
+            since = since - timedelta(minutes=buffer)
+        return since
+
     def _time_clause(self, since: datetime | None, window_minutes: int) -> dict[str, Any] | None:
+        since = self._effective_since(since)
         if since is not None:
-            if since.tzinfo is None:
-                since = since.replace(tzinfo=timezone.utc)
             return {"range": {"@timestamp": {"gte": since.isoformat()}}}
         return {"range": {"@timestamp": {"gte": f"now-{window_minutes}m", "lte": "now"}}}
 
@@ -51,6 +83,11 @@ class ElkClient:
             response = self.es.search(index=self.config.elk_index, body=query)
         except ApiError as exc:
             logger.warning("ELK query failed (%s): %s", exc.status_code, exc.message)
+            self._notify_elk_query_error(exc)
+            return []
+        except Exception as exc:
+            logger.warning("ELK query failed: %s", exc)
+            self._notify_elk_query_error(exc)
             return []
         hits: list[dict[str, Any]] = []
         for hit in response.get("hits", {}).get("hits", []):
@@ -60,24 +97,50 @@ class ElkClient:
         return hits
 
     def _run_token_queries(self, ip: str, since: datetime | None, window_minutes: int) -> list[dict[str, Any]]:
+        token_path_clause = {
+            "bool": {
+                "should": [
+                    {"match_phrase": {"message": "POST /api/token/"}},
+                    {"match_phrase": {"message": "POST /api/token "}},
+                ],
+                "minimum_should_match": 1,
+            }
+        }
         base_must = [
             {"match_phrase": {"message": ip}},
-            {"match_phrase": {"message": "POST /api/token/"}},
+            token_path_clause,
         ]
         ip_only = [{"match_phrase": {"message": ip}}]
 
-        attempts: list[dict[str, Any]] = []
+        attempts: list[tuple[dict[str, Any], bool]] = []
         time_clause = self._time_clause(since, window_minutes)
         if time_clause:
-            attempts.append({"query": {"bool": {"must": base_must + [time_clause]}}, "size": 10, "sort": [{"@timestamp": "desc"}]})
-            attempts.append({"query": {"bool": {"must": ip_only + [time_clause]}}, "size": 20, "sort": [{"@timestamp": "desc"}]})
-        attempts.append({"query": {"bool": {"must": base_must}}, "size": 10, "sort": [{"@timestamp": "desc"}]})
-        attempts.append({"query": {"bool": {"must": ip_only}}, "size": 20, "sort": [{"@timestamp": "desc"}]})
+            attempts.append(
+                ({"query": {"bool": {"must": base_must + [time_clause]}}, "size": 10, "sort": [{"@timestamp": "desc"}]}, True)
+            )
+            attempts.append(
+                ({"query": {"bool": {"must": ip_only + [time_clause]}}, "size": 20, "sort": [{"@timestamp": "desc"}]}, False)
+            )
+        attempts.append(
+            ({"query": {"bool": {"must": base_must}}, "size": 10, "sort": [{"@timestamp": "desc"}]}, True)
+        )
+        attempts.append(
+            ({"query": {"bool": {"must": ip_only}}, "size": 20, "sort": [{"@timestamp": "desc"}]}, False)
+        )
 
-        for query in attempts:
-            hits = self._search(query, require_token=True)
+        for query, require_token in attempts:
+            hits = self._search(query, require_token=require_token)
             if hits:
-                return hits
+                token_hits = [
+                    hit
+                    for hit in hits
+                    if TOKEN_PATH_RE.search(str(hit.get("request") or ""))
+                    or hit.get("username")
+                ]
+                if token_hits:
+                    return token_hits
+                if not require_token:
+                    return hits
         return []
 
     def find_token_hits(
@@ -100,7 +163,6 @@ class ElkClient:
         since: datetime | None = None,
         hours: int = 24,
     ) -> str | None:
-        """Best-effort username for an IP from any ELK log line in the window."""
         minutes = hours * 60
         ip_only = [{"match_phrase": {"message": ip}}]
         attempts: list[dict[str, Any]] = []

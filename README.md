@@ -10,7 +10,7 @@ Every 60s loop:
   2. BLOCK on /api/token/ or /dem_* (all IPs by default)
   3. If blocked >= threshold → add IP to debug-temp-allow (once per IP — never re-add)
   4. On first WAF ALLOW → remove IP immediately, then search app log / ELK + Slack
-  5. If no WAF ALLOW in 5 min → remove IP (fail-safe)
+  5. If no WAF ALLOW in 15 min → remove IP (fail-safe; override with `DEBUG_EXPIRE_MINUTES`)
 ```
 
 ## Prerequisites
@@ -102,7 +102,8 @@ SLACK_WEBHOOK_URL=https://hooks.slack.com/...
 | `ELK_INDEX` | Index pattern e.g. `cv2*` |
 | `APP_LOG_PATH` | Optional local log (only if `TOKEN_LOOKUP=local` or `both`) |
 | `ELK_WINDOW_MINUTES` | ELK search window (default `60` = last 1 hour) |
-| `SLACK_WEBHOOK_URL` | Slack webhook — IP added + client name + daily report |
+| `SLACK_WEBHOOK_URL` | Slack webhook — debug, daily report, and **error alerts** |
+| `ERROR_ALERT_COOLDOWN_SECONDS` | Min seconds between duplicate error alerts (default `3600`) |
 | `DAILY_REPORT_ENABLED` | Auto 24h report at 02:30 UTC / 08:00 IST (default `true`) |
 | `DAILY_REPORT_HOUR_UTC` | Hour UTC (default `2`) |
 | `DAILY_REPORT_MINUTE_UTC` | Minute UTC (default `30`) |
@@ -154,3 +155,17 @@ SLACK_WEBHOOK_URL=https://hooks.slack.com/...
 - Each IP is debugged **at most once** — completed sessions are never re-added.
 - Registry file is optional — username from ELK `request_body` / `message` field is used when found.
 - State is persisted in Docker volume `/data/state.json`.
+
+## Slack error alerts
+
+With `SLACK_WEBHOOK_URL` set, errors are posted to Slack (max once per hour per type):
+
+| Error | When |
+|-------|------|
+| Client registry S3 read failed | Wrong/missing bucket or key (`NoSuchBucket`, etc.) |
+| Failed to add IP to debug set | WAF `update_ip_set` fails |
+| Failed to remove IP from debug set | WAF remove fails |
+| CloudWatch log group not available | Log group missing or inaccessible |
+| ELK not connecting | Startup `info()` check fails |
+| ELK query failed | Search returns connection/API error |
+| Monitor iteration failed | Unexpected exception in main loop |

@@ -26,6 +26,8 @@ class Config:
         "WAF_LOG_PREFIX",
         "AWSLogs/231322554539/WAFLogs/ap-south-1/WAF-CV3/",
     )
+    # Optional; defaults to WAF_LOG_BUCKET. Registry JSON is often in the WAF logs bucket.
+    registry_s3_bucket = os.getenv("REGISTRY_S3_BUCKET", "").strip()
     registry_s3_key = os.getenv("REGISTRY_S3_KEY", "config/waf-ip-clients.json")
     # If true, only /api/token/ blocks from registry IPs are monitored (legacy).
     registry_only = env_bool("REGISTRY_ONLY", False)
@@ -35,7 +37,9 @@ class Config:
 
     block_threshold = env_int("BLOCK_THRESHOLD", 10)
     block_window_minutes = env_int("BLOCK_WINDOW_MINUTES", 30)
-    debug_expire_minutes = env_int("DEBUG_EXPIRE_MINUTES", 5)
+    debug_expire_minutes = env_int("DEBUG_EXPIRE_MINUTES", 15)
+    # ELK @timestamp can lag behind WAF; search from this many minutes before debug start.
+    elk_since_buffer_minutes = env_int("ELK_SINCE_BUFFER_MINUTES", 5)
     hits_to_remove = env_int("HITS_TO_REMOVE", 1)
 
     elk_url = os.getenv("ELK_URL", "")
@@ -49,6 +53,8 @@ class Config:
     token_lookup = os.getenv("TOKEN_LOOKUP", "elk").lower()
     app_log_path = os.getenv("APP_LOG_PATH", "")
     app_log_tail_mb = env_int("APP_LOG_TAIL_MB", 50)
+
+    error_alert_cooldown_seconds = env_int("ERROR_ALERT_COOLDOWN_SECONDS", 3600)
 
     slack_webhook_url = os.getenv("SLACK_WEBHOOK_URL", "")
     state_file = os.getenv("STATE_FILE", "/data/state.json")
