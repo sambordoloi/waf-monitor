@@ -15,10 +15,10 @@ Every 60s loop:
 
 ## Prerequisites
 
-1. WAF logging to **CloudWatch** (default) — set `LOG_SOURCE=s3` to use S3 instead (slower ALLOW detection)
+1. WAF logging to **CloudWatch** — set `CLOUDWATCH_LOG_GROUP` (no S3 bucket required for logs)
 2. WAF IP set `debug_temp_allow_ip` + high-priority ALLOW rule
-3. Client registry at `s3://aws-waf-logs-cv3/config/waf-ip-clients.json` (optional, for names)
-4. ELK with nginx backend logs in `cv2*` (same format as `access_api.log` — `http_x_forwarded_for`, `request_body`)
+3. ELK with nginx backend logs in `cv2*` (same format as `access_api.log` — `http_x_forwarded_for`, `request_body`)
+4. Optional: client-name JSON in S3 — set `REGISTRY_S3_BUCKET` + `REGISTRY_S3_KEY` (otherwise usernames come from ELK only)
 5. IAM permissions (see below)
 
 ## Setup
@@ -96,6 +96,8 @@ SLACK_WEBHOOK_URL=https://hooks.slack.com/...
 | `BLOCK_THRESHOLD` | Blocks before debug (default `10`) |
 | `LOG_SOURCE` | `cloudwatch` (default) or `s3` |
 | `CLOUDWATCH_LOG_GROUP` | **Required** when using CloudWatch — your WAF log group name |
+| `WAF_LOG_BUCKET` / `WAF_LOG_PREFIX` | Only when `LOG_SOURCE=s3` |
+| `REGISTRY_S3_BUCKET` | Optional client-name JSON; **not** read unless set (CloudWatch deploys need no S3) |
 | `HITS_TO_REMOVE` | Remove after N hits (default `1`) |
 | `TOKEN_LOOKUP` | `elk` (default), `local`, or `both` |
 | `ELK_URL` | Elasticsearch URL for username lookup |
@@ -117,29 +119,23 @@ SLACK_WEBHOOK_URL=https://hooks.slack.com/...
   "Statement": [
     {
       "Effect": "Allow",
-      "Action": ["s3:GetObject", "s3:ListBucket"],
-      "Resource": [
-        "arn:aws:s3:::aws-waf-logs-cv3",
-        "arn:aws:s3:::aws-waf-logs-cv3/*"
-      ]
+      "Action": ["logs:FilterLogEvents"],
+      "Resource": "arn:aws:logs:ap-south-1:231322554539:log-group:<your-waf-log-group>:*"
     },
     {
       "Effect": "Allow",
       "Action": ["wafv2:GetIPSet", "wafv2:UpdateIPSet"],
       "Resource": "arn:aws:wafv2:ap-south-1:231322554539:regional/ipset/debug_temp_allow_ip/*"
     },
-    {
-      "Effect": "Allow",
-      "Action": ["logs:FilterLogEvents"],
-      "Resource": "arn:aws:logs:ap-south-1:231322554539:log-group:aws-waf-logs-cv3:*"
-    }
   ]
 }
 ```
 
-## Registry file example
+Add `s3:GetObject` on your registry object only if you use `REGISTRY_S3_BUCKET`.
 
-`s3://aws-waf-logs-cv3/config/waf-ip-clients.json`
+## Registry file example (optional)
+
+Only if you set `REGISTRY_S3_BUCKET` — e.g. `s3://my-bucket/config/waf-ip-clients.json`
 
 ```json
 {

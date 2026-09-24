@@ -21,12 +21,13 @@ class Config:
     # Log source: cloudwatch (default, low latency) or s3
     log_source = os.getenv("LOG_SOURCE", "cloudwatch").lower()
     cloudwatch_log_group = os.getenv("CLOUDWATCH_LOG_GROUP", "")
+    # Only used when LOG_SOURCE=s3 (not needed for CloudWatch).
     waf_log_bucket = os.getenv("WAF_LOG_BUCKET", "aws-waf-logs-cv3")
     waf_log_prefix = os.getenv(
         "WAF_LOG_PREFIX",
         "AWSLogs/231322554539/WAFLogs/ap-south-1/WAF-CV3/",
     )
-    # Optional; defaults to WAF_LOG_BUCKET. Registry JSON is often in the WAF logs bucket.
+    # Optional client-name map in S3. Set explicitly; CloudWatch-only deploys skip S3 entirely.
     registry_s3_bucket = os.getenv("REGISTRY_S3_BUCKET", "").strip()
     registry_s3_key = os.getenv("REGISTRY_S3_KEY", "config/waf-ip-clients.json")
     # If true, only /api/token/ blocks from registry IPs are monitored (legacy).

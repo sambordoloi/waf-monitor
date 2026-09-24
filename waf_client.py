@@ -23,14 +23,27 @@ class WafClient:
         self.config = config
         self.error_notifier = error_notifier
         self.client = boto3.client("wafv2", region_name=config.aws_region)
-        self.s3 = boto3.client("s3", region_name=config.aws_region)
+        self._s3 = None
         self.debug_ip_set_id = normalize_ip_set_id(config.debug_ip_set_id)
 
-    def _registry_bucket(self) -> str:
-        return self.config.registry_s3_bucket or self.config.waf_log_bucket
+    @property
+    def s3(self):
+        if self._s3 is None:
+            self._s3 = boto3.client("s3", region_name=config.aws_region)
+        return self._s3
+
+    def _registry_bucket(self) -> str | None:
+        if self.config.registry_s3_bucket:
+            return self.config.registry_s3_bucket
+        # Legacy: registry lived next to WAF log files in S3.
+        if self.config.log_source == "s3":
+            return self.config.waf_log_bucket or None
+        return None
 
     def load_registry(self) -> dict[str, str]:
         bucket = self._registry_bucket()
+        if not bucket:
+            return {}
         key = self.config.registry_s3_key
         try:
             obj = self.s3.get_object(Bucket=bucket, Key=key)

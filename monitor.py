@@ -249,7 +249,12 @@ class WafMonitor:
 
     def run_full_scan(self) -> None:
         registry = self.waf.load_registry()
-        logger.info("Registry loaded: %s client IP(s)", len(registry))
+        if registry:
+            logger.info("Registry loaded: %s client IP(s)", len(registry))
+        elif self.config.registry_s3_bucket or self.config.log_source == "s3":
+            logger.info("Registry empty or unreadable")
+        else:
+            logger.info("Registry skipped (CloudWatch — set REGISTRY_S3_BUCKET to load client names)")
 
         blocked = self.logs.blocked_valid_counts(
             registry,
